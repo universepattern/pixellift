@@ -7,6 +7,10 @@ const brushSize = document.querySelector("#brushSize");
 const brushSizeValue = document.querySelector("#brushSizeValue");
 const tolerance = document.querySelector("#tolerance");
 const toleranceValue = document.querySelector("#toleranceValue");
+const elementSensitivity = document.querySelector("#elementSensitivity");
+const elementSensitivityValue = document.querySelector("#elementSensitivityValue");
+const detectBtn = document.querySelector("#detectBtn");
+const elementStatus = document.querySelector("#elementStatus");
 const emptyState = document.querySelector("#emptyState");
 const canvas = document.querySelector("#canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
@@ -20,6 +24,8 @@ let rectStart = null;
 let rectPreview = null;
 let undoStack = [];
 let lastBrushPoint = null;
+let elementLabels = null;
+let detectedElements = [];
 
 function setTool(nextTool) {
   tool = nextTool;
@@ -34,6 +40,7 @@ function syncButtons() {
   deleteBtn.disabled = !hasSelection;
   clearBtn.disabled = !hasSelection;
   downloadBtn.disabled = !hasImage;
+  detectBtn.disabled = !hasImage;
   undoBtn.disabled = undoStack.length === 0;
 }
 
@@ -57,9 +64,12 @@ function loadImage(file) {
       ctx.drawImage(image, 0, 0, canvas.width, canvas.height);
       imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
       mask = new Uint8Array(canvas.width * canvas.height);
+      elementLabels = null;
+      detectedElements = [];
       undoStack = [];
       emptyState.hidden = true;
       canvas.classList.add("ready");
+      elementStatus.textContent = "Press Detect elements to find editable parts.";
       render();
       syncButtons();
     };
@@ -90,6 +100,29 @@ function render() {
     ctx.setLineDash([8, 5]);
     const { x, y, width, height } = rectPreview;
     ctx.strokeRect(x, y, width, height);
+  }
+  if (tool === "element" && detectedElements.length) {
+    ctx.strokeStyle = "rgba(255, 255, 255, .95)";
+    ctx.lineWidth = 1;
+    ctx.setLineDash([5, 4]);
+    for (const element of detectedElements) {
+      ctx.strokeRect(
+        element.minX - 1,
+        element.minY - 1,
+        element.maxX - element.minX + 3,
+        element.maxY - element.minY + 3
+      );
+    }
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "rgba(31, 122, 112, .9)";
+    for (const element of detectedElements) {
+      ctx.strokeRect(
+        element.minX - 2,
+        element.minY - 2,
+        element.maxX - element.minX + 5,
+        element.maxY - element.minY + 5
+      );
+    }
   }
   ctx.restore();
 }
@@ -178,6 +211,178 @@ function magicSelect(start) {
       if (colorDistance(pixelAt(data, x, y), target) <= limit) queue.push({ x, y });
     }
   }
+}
+
+function luminanceAt(data, index) {
+  return data[index] * 0.299 + data[index + 1] * 0.587 + data[index + 2] * 0.114;
+}
+
+function pixelContrast(data, x, y, width, height) {
+  const center = (y * width + x) * 4;
+  const centerLum = luminanceAt(data, center);
+  let maxLumDiff = 0;
+  let maxColorDiff = 0;
+
+  for (const [ox, oy] of [[3, 0], [-3, 0], [0, 3], [0, -3], [2, 2], [2, -2], [-2, 2], [-2, -2]]) {
+    const nx = x + ox;
+    const ny = y + oy;
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+    const neighbor = (ny * width + nx) * 4;
+    maxLumDiff = Math.max(maxLumDiff, Math.abs(centerLum - luminanceAt(data, neighbor)));
+    maxColorDiff = Math.max(maxColorDiff, colorDistance(
+      [data[center], data[center + 1], data[center + 2]],
+      [data[neighbor], data[neighbor + 1], data[neighbor + 2]]
+    ));
+  }
+
+  return Math.max(maxLumDiff, maxColorDiff * 0.72);
+}
+
+function buildElementCandidateMask(width, height) {
+  const data = imageData.data;
+  const sensitivity = Number(elementSensitivity.value);
+  const candidates = new Uint8Array(width * height);
+
+  for (let y = 1; y < height - 1; y += 1) {
+    for (let x = 1; x < width - 1; x += 1) {
+      if (pixelContrast(data, x, y, width, height) >= sensitivity) {
+        candidates[y * width + x] = 1;
+      }
+    }
+  }
+
+  return dilateMask(candidates, width, height, 2);
+}
+
+function componentColor(data, indexes) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  for (const index of indexes) {
+    const pixel = index * 4;
+    r += data[pixel];
+    g += data[pixel + 1];
+    b += data[pixel + 2];
+  }
+  return [
+    Math.round(r / indexes.length),
+    Math.round(g / indexes.length),
+    Math.round(b / indexes.length),
+  ];
+}
+
+function detectElements() {
+  if (!imageData) return;
+  const width = canvas.width;
+  const height = canvas.height;
+  const candidates = buildElementCandidateMask(width, height);
+  const labels = new Int32Array(width * height);
+  const elements = [];
+  const minPixels = Math.max(18, Math.round((width * height) / 90000));
+  let label = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const startIndex = y * width + x;
+      if (!candidates[startIndex] || labels[startIndex]) continue;
+
+      label += 1;
+      const stack = [startIndex];
+      const indexes = [];
+      labels[startIndex] = label;
+      let minX = x;
+      let maxX = x;
+      let minY = y;
+      let maxY = y;
+
+      while (stack.length) {
+        const index = stack.pop();
+        indexes.push(index);
+        const cx = index % width;
+        const cy = Math.floor(index / width);
+        minX = Math.min(minX, cx);
+        maxX = Math.max(maxX, cx);
+        minY = Math.min(minY, cy);
+        maxY = Math.max(maxY, cy);
+
+        for (const neighbor of [index + 1, index - 1, index + width, index - width]) {
+          if (neighbor < 0 || neighbor >= candidates.length) continue;
+          if ((neighbor === index + 1 && cx === width - 1) || (neighbor === index - 1 && cx === 0)) continue;
+          if (!candidates[neighbor] || labels[neighbor]) continue;
+          labels[neighbor] = label;
+          stack.push(neighbor);
+        }
+      }
+
+      const boxWidth = maxX - minX + 1;
+      const boxHeight = maxY - minY + 1;
+      const fillsMostImage = boxWidth > width * 0.9 && boxHeight > height * 0.9;
+      if (indexes.length < minPixels || fillsMostImage) {
+        for (const index of indexes) labels[index] = 0;
+        label -= 1;
+        continue;
+      }
+
+      elements.push({
+        id: label,
+        indexes,
+        minX,
+        maxX,
+        minY,
+        maxY,
+        color: componentColor(imageData.data, indexes),
+      });
+    }
+  }
+
+  elementLabels = labels;
+  detectedElements = elements
+    .sort((a, b) => b.indexes.length - a.indexes.length)
+    .slice(0, 250);
+
+  const keptIds = new Set(detectedElements.map((element) => element.id));
+  for (let i = 0; i < elementLabels.length; i += 1) {
+    if (elementLabels[i] && !keptIds.has(elementLabels[i])) elementLabels[i] = 0;
+  }
+
+  setTool("element");
+  elementStatus.textContent = detectedElements.length
+    ? `${detectedElements.length} elements found. Click one on the image to select it.`
+    : "No clear elements found. Try lowering sensitivity.";
+  render();
+  syncButtons();
+}
+
+function selectDetectedElement(point) {
+  if (!elementLabels || !detectedElements.length) {
+    detectElements();
+    return;
+  }
+
+  let label = elementLabels[point.y * canvas.width + point.x];
+  if (!label) {
+    const searchRadius = 10;
+    let best = null;
+    for (let y = Math.max(0, point.y - searchRadius); y <= Math.min(canvas.height - 1, point.y + searchRadius); y += 1) {
+      for (let x = Math.max(0, point.x - searchRadius); x <= Math.min(canvas.width - 1, point.x + searchRadius); x += 1) {
+        const candidate = elementLabels[y * canvas.width + x];
+        if (!candidate) continue;
+        const distance = Math.hypot(point.x - x, point.y - y);
+        if (!best || distance < best.distance) best = { label: candidate, distance };
+      }
+    }
+    label = best?.label || 0;
+  }
+
+  const element = detectedElements.find((item) => item.id === label);
+  if (!element) return;
+
+  mask.fill(0);
+  for (const index of element.indexes) mask[index] = 1;
+  mask = dilateMask(mask, canvas.width, canvas.height, 2);
+  elementStatus.textContent = `Selected element: ${element.maxX - element.minX + 1} x ${element.maxY - element.minY + 1}px.`;
+  render();
+  syncButtons();
 }
 
 function pushUndo() {
@@ -347,6 +552,9 @@ function removeSelection() {
 
   imageData = new ImageData(output, width, height);
   mask.fill(0);
+  elementLabels = null;
+  detectedElements = [];
+  elementStatus.textContent = "Press Detect elements to refresh editable parts.";
   render();
   syncButtons();
 }
@@ -362,6 +570,16 @@ brushSize.addEventListener("input", () => {
 tolerance.addEventListener("input", () => {
   toleranceValue.textContent = tolerance.value;
 });
+
+elementSensitivity.addEventListener("input", () => {
+  elementSensitivityValue.textContent = elementSensitivity.value;
+  elementLabels = null;
+  detectedElements = [];
+  if (imageData) elementStatus.textContent = "Press Detect elements to refresh with this sensitivity.";
+  render();
+});
+
+detectBtn.addEventListener("click", detectElements);
 
 fileInput.addEventListener("change", () => {
   if (fileInput.files[0]) loadImage(fileInput.files[0]);
@@ -380,6 +598,9 @@ canvas.addEventListener("pointerdown", (event) => {
     rectPreview = { x: point.x, y: point.y, width: 1, height: 1 };
   } else if (tool === "wand") {
     magicSelect(point);
+    drawing = false;
+  } else if (tool === "element") {
+    selectDetectedElement(point);
     drawing = false;
   }
   render();
@@ -438,6 +659,9 @@ undoBtn.addEventListener("click", () => {
   if (!previous) return;
   imageData = previous;
   mask.fill(0);
+  elementLabels = null;
+  detectedElements = [];
+  elementStatus.textContent = "Press Detect elements to refresh editable parts.";
   render();
   syncButtons();
 });

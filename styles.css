@@ -118,7 +118,7 @@ h2,
   border: 1px solid var(--line);
   border-radius: 8px;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(2, 1fr);
   overflow: hidden;
 }
 
@@ -131,6 +131,15 @@ h2,
 
 .segmented button + button {
   border-left: 1px solid var(--line);
+}
+
+.segmented button:nth-child(3) {
+  border-left: 0;
+  border-top: 1px solid var(--line);
+}
+
+.segmented button:nth-child(4) {
+  border-top: 1px solid var(--line);
 }
 
 .segmented .active {
@@ -153,6 +162,12 @@ input[type="range"] {
   border-color: var(--danger);
   color: white;
   font-weight: 800;
+}
+
+.tool-note {
+  color: var(--muted);
+  font-size: .82rem;
+  line-height: 1.35;
 }
 
 .stage-wrap {
