@@ -185,55 +185,104 @@ function pushUndo() {
   if (undoStack.length > 12) undoStack.shift();
 }
 
+function buildSampleOffsets(maxRadius) {
+  const offsets = [];
+  for (let y = -maxRadius; y <= maxRadius; y += 1) {
+    for (let x = -maxRadius; x <= maxRadius; x += 1) {
+      if (x === 0 && y === 0) continue;
+      const distance = Math.hypot(x, y);
+      if (distance <= maxRadius) offsets.push({ x, y, distance });
+    }
+  }
+  return offsets.sort((a, b) => a.distance - b.distance);
+}
+
+function selectionBounds(width, height) {
+  let minX = width;
+  let maxX = -1;
+  let minY = height;
+  let maxY = -1;
+  let count = 0;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!mask[y * width + x]) continue;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
+      count += 1;
+    }
+  }
+
+  return count ? { minX, maxX, minY, maxY, count } : null;
+}
+
+function nearbyBackgroundColor(source, selectedMask, x, y, width, height, offsets) {
+  let r = 0;
+  let g = 0;
+  let b = 0;
+  let a = 0;
+  let weightTotal = 0;
+  let samples = 0;
+
+  for (const offset of offsets) {
+    const nx = x + offset.x;
+    const ny = y + offset.y;
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+    if (selectedMask[ny * width + nx]) continue;
+
+    const weight = 1 / Math.max(1, offset.distance * offset.distance);
+    const pixelIndex = (ny * width + nx) * 4;
+    r += source[pixelIndex] * weight;
+    g += source[pixelIndex + 1] * weight;
+    b += source[pixelIndex + 2] * weight;
+    a += source[pixelIndex + 3] * weight;
+    weightTotal += weight;
+    samples += 1;
+
+    if (samples >= 36 && offset.distance > 3) break;
+  }
+
+  if (!samples) return null;
+  return [
+    r / weightTotal,
+    g / weightTotal,
+    b / weightTotal,
+    a / weightTotal,
+  ];
+}
+
 function removeSelection() {
   if (!imageData) return;
+  const width = canvas.width;
+  const height = canvas.height;
+  const bounds = selectionBounds(width, height);
+  if (!bounds) return;
+
   pushUndo();
   const source = imageData.data;
   const output = new Uint8ClampedArray(source);
-  const width = canvas.width;
-  const height = canvas.height;
+  const selectedMask = new Uint8Array(mask);
+  const selectionWidth = bounds.maxX - bounds.minX + 1;
+  const selectionHeight = bounds.maxY - bounds.minY + 1;
+  const maxRadius = Math.min(90, Math.max(12, Math.ceil(Math.max(selectionWidth, selectionHeight) * 0.65)));
+  const sampleOffsets = buildSampleOffsets(maxRadius);
 
-  for (let pass = 0; pass < 28; pass += 1) {
-    let changed = 0;
-    for (let y = 0; y < height; y += 1) {
-      for (let x = 0; x < width; x += 1) {
-        const index = y * width + x;
-        if (!mask[index]) continue;
-        let r = 0;
-        let g = 0;
-        let b = 0;
-        let a = 0;
-        let count = 0;
+  for (let y = bounds.minY; y <= bounds.maxY; y += 1) {
+    for (let x = bounds.minX; x <= bounds.maxX; x += 1) {
+      const index = y * width + x;
+      if (!selectedMask[index]) continue;
 
-        for (let oy = -1; oy <= 1; oy += 1) {
-          for (let ox = -1; ox <= 1; ox += 1) {
-            if (ox === 0 && oy === 0) continue;
-            const nx = x + ox;
-            const ny = y + oy;
-            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-            const ni = ny * width + nx;
-            if (mask[ni]) continue;
-            const pi = ni * 4;
-            r += output[pi];
-            g += output[pi + 1];
-            b += output[pi + 2];
-            a += output[pi + 3];
-            count += 1;
-          }
-        }
-
-        if (count) {
-          const oi = index * 4;
-          output[oi] = r / count;
-          output[oi + 1] = g / count;
-          output[oi + 2] = b / count;
-          output[oi + 3] = a / count;
-          mask[index] = 0;
-          changed += 1;
-        }
+      const color = nearbyBackgroundColor(source, selectedMask, x, y, width, height, sampleOffsets);
+      if (color) {
+        const outputIndex = index * 4;
+        output[outputIndex] = color[0];
+        output[outputIndex + 1] = color[1];
+        output[outputIndex + 2] = color[2];
+        output[outputIndex + 3] = color[3];
       }
     }
-    if (!changed) break;
   }
 
   imageData = new ImageData(output, width, height);
