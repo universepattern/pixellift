@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>PixelLift Editor</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <h1>PixelLift</h1>
+        <p>Select marks, lines, or objects in an image and remove them.</p>
+      </div>
+      <div class="file-actions">
+        <label class="primary-action">
+          <input id="fileInput" type="file" accept="image/*">
+          Upload image
+        </label>
+        <button id="downloadBtn" type="button" disabled>Download</button>
+      </div>
+    </header>
+
+    <main class="workspace">
+      <aside class="toolbar" aria-label="Image tools">
+        <section>
+          <h2>Tool</h2>
+          <div class="segmented" role="group" aria-label="Selection tool">
+            <button class="active" type="button" data-tool="brush" title="Brush selection">Brush</button>
+            <button type="button" data-tool="rect" title="Rectangle selection">Box</button>
+            <button type="button" data-tool="wand" title="Magic color selection">Wand</button>
+          </div>
+        </section>
+
+        <section>
+          <label for="brushSize">Brush size <span id="brushSizeValue">28</span></label>
+          <input id="brushSize" type="range" min="4" max="100" value="28">
+        </section>
+
+        <section>
+          <label for="tolerance">Wand tolerance <span id="toleranceValue">34</span></label>
+          <input id="tolerance" type="range" min="5" max="120" value="34">
+        </section>
+
+        <section class="actions">
+          <button id="deleteBtn" type="button" disabled>Delete selected</button>
+          <button id="clearBtn" type="button" disabled>Clear selection</button>
+          <button id="undoBtn" type="button" disabled>Undo</button>
+        </section>
+      </aside>
+
+      <section class="stage-wrap" aria-label="Image editing area">
+        <div id="emptyState" class="empty-state">
+          <strong>Drop an image here or upload one.</strong>
+          <span>Then paint, box-select, or wand-select the part you want removed.</span>
+        </div>
+        <canvas id="canvas" aria-label="Editable image canvas"></canvas>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
