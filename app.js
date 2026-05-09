@@ -197,7 +197,7 @@ function buildSampleOffsets(maxRadius) {
   return offsets.sort((a, b) => a.distance - b.distance);
 }
 
-function selectionBounds(width, height) {
+function maskBounds(maskData, width, height) {
   let minX = width;
   let maxX = -1;
   let minY = height;
@@ -206,7 +206,7 @@ function selectionBounds(width, height) {
 
   for (let y = 0; y < height; y += 1) {
     for (let x = 0; x < width; x += 1) {
-      if (!mask[y * width + x]) continue;
+      if (!maskData[y * width + x]) continue;
       minX = Math.min(minX, x);
       maxX = Math.max(maxX, x);
       minY = Math.min(minY, y);
@@ -218,33 +218,49 @@ function selectionBounds(width, height) {
   return count ? { minX, maxX, minY, maxY, count } : null;
 }
 
-function nearbyBackgroundColor(source, selectedMask, x, y, width, height, offsets) {
+function dilateMask(maskData, width, height, radius) {
+  const expanded = new Uint8Array(maskData);
+  const r2 = radius * radius;
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      if (!maskData[y * width + x]) continue;
+
+      const minX = Math.max(0, x - radius);
+      const maxX = Math.min(width - 1, x + radius);
+      const minY = Math.max(0, y - radius);
+      const maxY = Math.min(height - 1, y + radius);
+
+      for (let yy = minY; yy <= maxY; yy += 1) {
+        for (let xx = minX; xx <= maxX; xx += 1) {
+          const dx = xx - x;
+          const dy = yy - y;
+          if (dx * dx + dy * dy <= r2) expanded[yy * width + xx] = 1;
+        }
+      }
+    }
+  }
+
+  return expanded;
+}
+
+function weightedColor(source, samples) {
   let r = 0;
   let g = 0;
   let b = 0;
   let a = 0;
   let weightTotal = 0;
-  let samples = 0;
 
-  for (const offset of offsets) {
-    const nx = x + offset.x;
-    const ny = y + offset.y;
-    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
-    if (selectedMask[ny * width + nx]) continue;
-
-    const weight = 1 / Math.max(1, offset.distance * offset.distance);
-    const pixelIndex = (ny * width + nx) * 4;
+  for (const sample of samples) {
+    const weight = 1 / Math.max(1, sample.distance * sample.distance * sample.distance);
+    const pixelIndex = sample.index * 4;
     r += source[pixelIndex] * weight;
     g += source[pixelIndex + 1] * weight;
     b += source[pixelIndex + 2] * weight;
     a += source[pixelIndex + 3] * weight;
     weightTotal += weight;
-    samples += 1;
-
-    if (samples >= 36 && offset.distance > 3) break;
   }
 
-  if (!samples) return null;
   return [
     r / weightTotal,
     g / weightTotal,
@@ -253,17 +269,61 @@ function nearbyBackgroundColor(source, selectedMask, x, y, width, height, offset
   ];
 }
 
+function nearbyBackgroundColor(source, selectedMask, x, y, width, height, offsets) {
+  const directions = [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+    [1, 1],
+    [1, -1],
+    [-1, 1],
+    [-1, -1],
+  ];
+  const directionalSamples = [];
+  const maxDistance = offsets[offsets.length - 1]?.distance || 1;
+
+  for (const [dx, dy] of directions) {
+    for (let distance = 1; distance <= maxDistance; distance += 1) {
+      const nx = x + dx * distance;
+      const ny = y + dy * distance;
+      if (nx < 0 || ny < 0 || nx >= width || ny >= height) break;
+      const index = ny * width + nx;
+      if (selectedMask[index]) continue;
+      directionalSamples.push({ index, distance });
+      break;
+    }
+  }
+
+  if (directionalSamples.length) return weightedColor(source, directionalSamples);
+
+  const fallbackSamples = [];
+
+  for (const offset of offsets) {
+    const nx = x + offset.x;
+    const ny = y + offset.y;
+    if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+    const index = ny * width + nx;
+    if (selectedMask[index]) continue;
+    fallbackSamples.push({ index, distance: offset.distance });
+    if (fallbackSamples.length >= 12) break;
+  }
+
+  return fallbackSamples.length ? weightedColor(source, fallbackSamples) : null;
+}
+
 function removeSelection() {
   if (!imageData) return;
   const width = canvas.width;
   const height = canvas.height;
-  const bounds = selectionBounds(width, height);
-  if (!bounds) return;
+  const originalBounds = maskBounds(mask, width, height);
+  if (!originalBounds) return;
 
   pushUndo();
   const source = imageData.data;
   const output = new Uint8ClampedArray(source);
-  const selectedMask = new Uint8Array(mask);
+  const selectedMask = dilateMask(mask, width, height, 3);
+  const bounds = maskBounds(selectedMask, width, height);
   const selectionWidth = bounds.maxX - bounds.minX + 1;
   const selectionHeight = bounds.maxY - bounds.minY + 1;
   const maxRadius = Math.min(90, Math.max(12, Math.ceil(Math.max(selectionWidth, selectionHeight) * 0.65)));
